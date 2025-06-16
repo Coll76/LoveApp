@@ -1,0 +1,20 @@
+# Ignore Python virtual environment (example: venv_love)
+venv_love/
+venv/
+env/
+.venv/
+
+# Ignore environment variable files
+.env
+.env.*
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+
+# Ignore Django migrations (optional)
+**/migrations/*.py
+**/migrations/__pycache__/
+
+# VS Code settings (optional)
+.vscode/
