@@ -8,7 +8,7 @@ import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-
+SECRET_KEY = config('SECRET_KEY')
 # Environment variables
 env = environ.Env(
     DEBUG=(bool, False)
@@ -37,16 +37,18 @@ THIRD_PARTY_APPS = [
     'health_check.db',
     'health_check.cache',
     'health_check.storage',
+    'jazzmin',
+    
 ]
 
 LOCAL_APPS = [
     'core',
     'users',
     'ideas',
-    # 'advertisements',
+    'advertisements',
     'payments',
     # 'analytics',
-    # 'pdf_generator',
+    'pdf_generator',
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -61,8 +63,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'apps.core.middleware.RateLimitMiddleware',
-    'apps.core.middleware.SecurityHeadersMiddleware',
+    'core.middleware.RateLimitMiddleware',
+    'core.middleware.SecurityHeadersMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -138,7 +140,7 @@ USE_TZ = True
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [BASE_DIR / 'static']
-
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 # Media files
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
@@ -181,7 +183,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
-    'DEFAULT_PAGINATION_CLASS': 'apps.core.pagination.CustomPagination',
+    'DEFAULT_PAGINATION_CLASS': 'core.pagination.CustomPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',
@@ -347,4 +349,141 @@ SUBSCRIPTION_PLANS = {
             'exclusive_templates': True
         }
     }
+}
+
+# Ad Providers Configuration
+AD_PROVIDERS = {
+    'google_adsense': {
+        'api_key': env('GOOGLE_ADSENSE_API_KEY', default=''),
+        'publisher_id': env('GOOGLE_ADSENSE_PUBLISHER_ID', default=''),
+        'client_id': env('GOOGLE_ADSENSE_CLIENT_ID', default=''),
+        'client_secret': env('GOOGLE_ADSENSE_CLIENT_SECRET', default=''),
+        'refresh_token': env('GOOGLE_ADSENSE_REFRESH_TOKEN', default=''),
+        'timeout': 30,
+    },
+    'facebook_audience_network': {
+        'api_key': env('FACEBOOK_FAN_ACCESS_TOKEN', default=''),
+        'app_id': env('FACEBOOK_FAN_APP_ID', default=''),
+        'placement_ids': env.list('FACEBOOK_FAN_PLACEMENT_IDS', default=[]),
+        'timeout': 30,
+    },
+    'google_admob': {
+        'api_key': env('GOOGLE_ADMOB_API_KEY', default=''),
+        'app_id': env('GOOGLE_ADMOB_APP_ID', default=''),
+        'ad_unit_ids': {
+            'banner': env('GOOGLE_ADMOB_BANNER_ID', default=''),
+            'interstitial': env('GOOGLE_ADMOB_INTERSTITIAL_ID', default=''),
+            'rewarded': env('GOOGLE_ADMOB_REWARDED_ID', default=''),
+            'native': env('GOOGLE_ADMOB_NATIVE_ID', default=''),
+        },
+        'timeout': 30,
+    },
+    'unity_ads': {
+        'api_key': env('UNITY_ADS_API_KEY', default=''),
+        'game_id': env('UNITY_ADS_GAME_ID', default=''),
+        'placement_ids': {
+            'banner': env('UNITY_ADS_BANNER_PLACEMENT', default=''),
+            'interstitial': env('UNITY_ADS_INTERSTITIAL_PLACEMENT', default=''),
+            'rewarded_video': env('UNITY_ADS_REWARDED_PLACEMENT', default=''),
+        },
+        'timeout': 30,
+    },
+    'custom_network': {
+        'api_key': env('CUSTOM_NETWORK_API_KEY', default=''),
+        'base_url': env('CUSTOM_NETWORK_BASE_URL', default=''),
+        'timeout': 30,
+    },
+}
+
+# Cache configuration for ad providers
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': env('REDIS_URL', default='redis://localhost:6379/1'),
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        },
+        'KEY_PREFIX': 'lovecraft_ads',
+        'TIMEOUT': 300,  # 5 minutes default
+    }
+}
+
+# Logging configuration for ad providers
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'ad_providers.log'),
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'advertisements.ad_providers': {
+            'handlers': ['file', 'console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'advertisements.services': {
+            'handlers': ['file', 'console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+    },
+}
+
+
+
+# AI Provider Settings
+DEFAULT_AI_PROVIDER = os.getenv('DEFAULT_AI_PROVIDER', 'deepseek')
+
+# DeepSeek/Ollama Settings
+DEEPSEEK_API_ENDPOINT = os.getenv('DEEPSEEK_API_ENDPOINT', 'http://localhost:11434/api/generate')
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')  # Empty for local Ollama
+
+# AI Response Caching
+AI_RESPONSE_CACHE_TIMEOUT = int(os.getenv('AI_RESPONSE_CACHE_TIMEOUT', 3600))
+
+# Optional: OpenAI fallback settings
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+
+# Logging configuration for AI operations
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': 'ai_client.log',
+        },
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'ideas.ai_client': {
+            'handlers': ['file', 'console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+    },
 }

@@ -42,7 +42,7 @@ class IdeaGenerationRequest:
     duration: str = ""
     special_requirements: str = ""
     custom_prompt: str = ""
-    ai_model: str = "gpt-3.5-turbo"
+    ai_model: str = "llama2"
     temperature: float = 0.7
     max_tokens: int = 1500
 
