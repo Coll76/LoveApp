@@ -303,7 +303,7 @@ class PDFDocumentFilter(BaseSecureFilter, DateRangeFilter):
             ).select_related('request')
             
             # For premium users, show additional filters
-            if self.request.user.has_active_subscription():
+            if hasattr(self.request.user, 'has_active_subscription') and self.request.user.has_active_subscription():
                 self._add_premium_filters()
     
     def _add_premium_filters(self):
@@ -461,7 +461,6 @@ class PDFTemplateFilter(BaseSecureFilter):
         model = PDFTemplate
         fields = {
             'name': ['icontains', 'exact'],
-            'category': ['exact', 'icontains'],
             'is_premium': ['exact'],
             'is_active': ['exact'],
         }
@@ -470,16 +469,20 @@ class PDFTemplateFilter(BaseSecureFilter):
         super().__init__(*args, **kwargs)
         
         # Populate category choices dynamically
-        categories = PDFTemplate.objects.active().values_list(
-            'category', flat=True
-        ).distinct().order_by('category')
-        
-        category_choices = [(cat, cat.title()) for cat in categories if cat]
-        self.filters['categories'].extra['choices'] = category_choices
+        try:
+            categories = PDFTemplate.objects.active().values_list(
+                'category', flat=True
+            ).distinct().order_by('category')
+            
+            category_choices = [(cat, cat.title()) for cat in categories if cat]
+            self.filters['categories'].extra['choices'] = category_choices
+        except:
+            # Handle case where PDFTemplate.objects.active() doesn't exist
+            pass
         
         # Filter premium templates for non-subscribers
         if self.request and self.request.user.is_authenticated:
-            if not self.request.user.has_active_subscription():
+            if not (hasattr(self.request.user, 'has_active_subscription') and self.request.user.has_active_subscription()):
                 self.queryset = self.queryset.filter(is_premium=False)
     
     def filter_search(self, queryset, name, value):
@@ -607,7 +610,8 @@ class PDFGenerationQueueFilter(BaseSecureFilter, DateRangeFilter):
             ).order_by('email')
         else:
             # Remove user filter for non-admin users
-            del self.filters['user']
+            if 'user' in self.filters:
+                del self.filters['user']
     
     def _optimize_queryset(self, queryset):
         """Optimize queue queries"""
@@ -670,9 +674,7 @@ class PDFUsageStatsFilter(BaseSecureFilter, DateRangeFilter):
     class Meta:
         model = PDFUsageStats
         fields = {
-            'action_type': ['exact', 'in'],
             'created_at': ['gte', 'lte'],
-            'ip_address': ['exact'],
         }
     
     def __init__(self, *args, **kwargs):
@@ -690,7 +692,8 @@ class PDFUsageStatsFilter(BaseSecureFilter, DateRangeFilter):
                     is_active=True
                 ).order_by('email')
             else:
-                del self.filters['user']
+                if 'user' in self.filters:
+                    del self.filters['user']
                 # Non-admin users can only see their own stats
                 self.queryset = self.queryset.filter(user=self.request.user)
     

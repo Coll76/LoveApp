@@ -1,4 +1,3 @@
-# apps/core/exceptions.py
 from rest_framework.views import exception_handler
 from rest_framework.response import Response
 from rest_framework import status
@@ -47,3 +46,13 @@ class UsageLimitException(APIException):
     """Usage limit exceptions"""
     def __init__(self, message="Daily usage limit exceeded"):
         super().__init__(message, status.HTTP_429_TOO_MANY_REQUESTS)
+
+class ValidationError(APIException):
+    """Validation error exception"""
+    def __init__(self, message="Validation failed"):
+        super().__init__(message, status.HTTP_400_BAD_REQUEST)
+
+class ServiceUnavailableError(APIException):
+    """Service unavailable exception"""
+    def __init__(self, message="Service temporarily unavailable"):
+        super().__init__(message, status.HTTP_503_SERVICE_UNAVAILABLE)

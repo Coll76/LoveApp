@@ -3,7 +3,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
-
+from django_filters.rest_framework import DjangoFilterBackend
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
@@ -59,7 +59,6 @@ from .permissions import (
 )
 from .filters import PDFDocumentFilter, PDFTemplateFilter
 from .throttles import PDFGenerationThrottle, PDFDownloadThrottle
-from .views import generate_pdf_async, optimize_pdf_async
 from .utils import get_client_ip, log_pdf_access
 
 logger = logging.getLogger(__name__)
@@ -88,7 +87,7 @@ class PDFDocumentViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated, IsPDFOwnerOrReadOnly]
     pagination_class = StandardResultsSetPagination
     filterset_class = PDFDocumentFilter
-    filter_backends = [filters.DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['title', 'idea__title', 'idea__description']
     ordering_fields = ['created_at', 'updated_at', 'download_count', 'generation_time']
     ordering = ['-created_at']
@@ -463,7 +462,7 @@ class PDFTemplateViewSet(ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = StandardResultsSetPagination
     filterset_class = PDFTemplateFilter
-    filter_backends = [filters.DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'description']
     ordering_fields = ['name', 'usage_count', 'created_at']
     ordering = ['sort_order', 'name']

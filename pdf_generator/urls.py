@@ -1,7 +1,8 @@
 # apps/pdf_generator/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from rest_framework.urlpatterns import format_suffix_patterns
+# Remove this import - we don't need it
+# from rest_framework.urlpatterns import format_suffix_patterns
 
 from . import views
 
@@ -111,8 +112,8 @@ urlpatterns = [
          name='cleanup-failed-pdfs'),
 ]
 
-# Apply format suffix patterns for content negotiation (JSON, XML, etc.)
-urlpatterns = format_suffix_patterns(urlpatterns)
+# REMOVE THIS LINE - it's causing the conflict!
+# urlpatterns = format_suffix_patterns(urlpatterns)
 
 # Alternative URL patterns for backwards compatibility or different naming conventions
 # You can uncomment these if you need alternative URL structures

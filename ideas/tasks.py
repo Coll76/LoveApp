@@ -729,3 +729,6 @@ def _calculate_content_quality_score(idea: GeneratedIdea) -> float:
     except Exception as e:
         logger.error(f"Failed to calculate quality score: {str(e)}")
         return 0.5  # Default score
+    
+    
+    

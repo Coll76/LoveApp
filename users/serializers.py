@@ -9,24 +9,41 @@ from core.utils import generate_random_string
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password_confirm = serializers.CharField(write_only=True)
+    username = serializers.CharField(required=False, allow_blank=True)  # Add username field
     
     class Meta:
         model = User
-        fields = ('email', 'first_name', 'last_name', 'password', 'password_confirm')
+        fields = ('email', 'first_name', 'last_name', 'password', 'password_confirm', 'username')
+        extra_kwargs = {
+            'first_name': {'required': False, 'allow_blank': True},
+            'last_name': {'required': False, 'allow_blank': True},
+        }
     
     def validate(self, attrs):
         if attrs['password'] != attrs['password_confirm']:
             raise serializers.ValidationError("Passwords don't match")
+        
+        # If username is provided but first_name/last_name are not, 
+        # try to split username into first and last name
+        username = attrs.get('username', '').strip()
+        if username and not attrs.get('first_name') and not attrs.get('last_name'):
+            name_parts = username.split(' ', 1)
+            attrs['first_name'] = name_parts[0]
+            attrs['last_name'] = name_parts[1] if len(name_parts) > 1 else ''
+        
+        # Remove username from attrs as it's not a User model field
+        attrs.pop('username', None)
+        
         return attrs
     
     def create(self, validated_data):
         validated_data.pop('password_confirm')
         user = User.objects.create_user(**validated_data)
-        
-        # Create related objects
-        UserProfile.objects.create(user=user)
-        UserPreferences.objects.create(user=user)
-        
+
+        # Create related objects only if they don't exist
+        UserProfile.objects.get_or_create(user=user)
+        UserPreferences.objects.get_or_create(user=user)
+
         return user
 
 class UserLoginSerializer(serializers.Serializer):
@@ -48,6 +65,25 @@ class UserLoginSerializer(serializers.Serializer):
             raise serializers.ValidationError('Must include email and password')
         
         return attrs
+
+class UserPublicSerializer(serializers.ModelSerializer):
+    """
+    Public serializer for user information (for use in other apps like PDF generator)
+    Only exposes safe, public information about users.
+    """
+    full_name = serializers.ReadOnlyField()
+    initials = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = User
+        fields = ('id', 'first_name', 'last_name', 'full_name', 'initials')
+        read_only_fields = ('id', 'first_name', 'last_name', 'full_name', 'initials')
+    
+    def get_initials(self, obj):
+        """Get user initials for display"""
+        first_initial = obj.first_name[0].upper() if obj.first_name else ''
+        last_initial = obj.last_name[0].upper() if obj.last_name else ''
+        return f"{first_initial}{last_initial}" if first_initial or last_initial else obj.email[0].upper()
 
 class UserProfileSerializer(serializers.ModelSerializer):
     age = serializers.ReadOnlyField()

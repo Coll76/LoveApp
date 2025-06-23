@@ -13,7 +13,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from ideas.models import GeneratedIdea
-from ideas.serializers import GeneratedIdeaListSerializer
+from ideas.serializers import GeneratedIdeaSerializer  # Fixed import
 from users.serializers import UserPublicSerializer
 from .models import (
     PDFDocument, PDFTemplate, PDFCustomization, 
@@ -33,10 +33,10 @@ class PDFTemplateSerializer(serializers.ModelSerializer):
     class Meta:
         model = PDFTemplate
         fields = [
-            'id', 'name', 'description', 'category', 
+            'id', 'name', 'slug', 'template_type', 'format', 'description', 
             'is_premium', 'is_accessible', 'preview_url',
-            'default_options', 'available_options', 'sort_order',
-            'usage_count', 'usage_count_display', 'created_at'
+            'usage_count', 'usage_count_display', 'sort_order',
+            'created_at', 'is_active'
         ]
         read_only_fields = ['id', 'usage_count', 'created_at']
     
@@ -55,7 +55,12 @@ class PDFTemplateSerializer(serializers.ModelSerializer):
         if not request or not request.user.is_authenticated:
             return not obj.is_premium
         
-        return not obj.is_premium or request.user.has_active_subscription()
+        # Check if user has premium subscription (assuming this method exists)
+        if hasattr(request.user, 'has_active_subscription'):
+            return not obj.is_premium or request.user.has_active_subscription()
+        else:
+            # Fallback: allow access to non-premium templates
+            return not obj.is_premium
     
     def get_usage_count_display(self, obj) -> str:
         """Format usage count for display"""
@@ -77,8 +82,7 @@ class PDFTemplateDetailSerializer(PDFTemplateSerializer):
     
     class Meta(PDFTemplateSerializer.Meta):
         fields = PDFTemplateSerializer.Meta.fields + [
-            'html_sample', 'css_sample', 'instructions',
-            'supported_variables', 'custom_fonts'
+            'html_sample', 'css_sample'
         ]
     
     def get_html_sample(self, obj) -> str:
@@ -93,9 +97,9 @@ class PDFTemplateDetailSerializer(PDFTemplateSerializer):
     
     def get_css_sample(self, obj) -> str:
         """Get CSS template sample"""
-        if obj.css_template:
-            css = obj.css_template[:300]
-            if len(obj.css_template) > 300:
+        if obj.css_styles:
+            css = obj.css_styles[:300]
+            if len(obj.css_styles) > 300:
                 css += "..."
             return css
         return ""
@@ -110,12 +114,11 @@ class PDFCustomizationSerializer(serializers.ModelSerializer):
         model = PDFCustomization
         fields = [
             'id', 'color_scheme', 'primary_color', 'secondary_color', 
-            'accent_color', 'font_family', 'font_size', 'line_height',
-            'margin_top', 'margin_bottom', 'margin_left', 'margin_right',
+            'accent_color', 'font_family', 'font_size',
             'include_cover_page', 'include_table_of_contents', 
-            'include_header', 'include_footer', 'include_page_numbers',
-            'header_text', 'footer_text', 'logo_position',
-            'custom_css', 'created_at', 'updated_at'
+            'include_footer', 'include_page_numbers',
+            'custom_logo', 'watermark_text',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
     
@@ -139,46 +142,14 @@ class PDFCustomizationSerializer(serializers.ModelSerializer):
     
     def validate_font_size(self, value):
         """Validate font size range"""
-        if value and (value < 8 or value > 24):
-            raise serializers.ValidationError("Font size must be between 8 and 24")
+        if value and (value < 8 or value > 20):
+            raise serializers.ValidationError("Font size must be between 8 and 20")
         return value
     
-    def validate_line_height(self, value):
-        """Validate line height range"""
-        if value and (value < 1.0 or value > 3.0):
-            raise serializers.ValidationError("Line height must be between 1.0 and 3.0")
-        return value
-    
-    def validate_custom_css(self, value):
-        """Validate and sanitize custom CSS"""
-        if not value:
-            return value
-        
-        # Basic CSS sanitization - remove potentially dangerous content
-        dangerous_patterns = [
-            r'@import',
-            r'javascript:',
-            r'expression\s*\(',
-            r'<script',
-            r'</script>',
-            r'onclick',
-            r'onload',
-            r'onerror'
-        ]
-        
-        css_lower = value.lower()
-        for pattern in dangerous_patterns:
-            if re.search(pattern, css_lower):
-                raise serializers.ValidationError(
-                    "Custom CSS contains potentially dangerous content"
-                )
-        
-        # Limit CSS length
-        if len(value) > 5000:
-            raise serializers.ValidationError(
-                "Custom CSS is too long (maximum 5000 characters)"
-            )
-        
+    def validate_watermark_text(self, value):
+        """Validate watermark text length"""
+        if value and len(value) > 100:
+            raise serializers.ValidationError("Watermark text cannot exceed 100 characters")
         return value
 
 
@@ -188,7 +159,7 @@ class PDFDocumentSerializer(serializers.ModelSerializer):
     """
     
     user = UserPublicSerializer(read_only=True)
-    idea = GeneratedIdeaListSerializer(read_only=True)
+    idea = GeneratedIdeaSerializer(read_only=True)
     template = PDFTemplateSerializer(read_only=True)
     file_size_display = serializers.SerializerMethodField()
     generation_time_display = serializers.SerializerMethodField()
@@ -199,15 +170,15 @@ class PDFDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = PDFDocument
         fields = [
-            'id', 'title', 'user', 'idea', 'template',
+            'id', 'title', 'filename', 'user', 'idea', 'template',
             'status', 'status_display', 'file_size', 'file_size_display',
             'generation_time', 'generation_time_display', 'download_count',
             'share_count', 'is_public', 'can_download', 'can_edit',
-            'created_at', 'updated_at'
+            'page_count', 'created_at', 'updated_at'
         ]
         read_only_fields = [
-            'id', 'user', 'file_size', 'generation_time', 
-            'download_count', 'share_count', 'created_at', 'updated_at'
+            'id', 'user', 'filename', 'file_size', 'generation_time', 
+            'download_count', 'share_count', 'page_count', 'created_at', 'updated_at'
         ]
     
     def get_file_size_display(self, obj) -> str:
@@ -227,7 +198,7 @@ class PDFDocumentSerializer(serializers.ModelSerializer):
         if not obj.generation_time:
             return "N/A"
         
-        seconds = obj.generation_time
+        seconds = int(obj.generation_time)
         if seconds >= 60:
             minutes = seconds // 60
             remaining_seconds = seconds % 60
@@ -240,8 +211,7 @@ class PDFDocumentSerializer(serializers.ModelSerializer):
             'pending': 'Generating...',
             'processing': 'Processing...',
             'completed': 'Ready',
-            'failed': 'Failed',
-            'queued': 'In Queue'
+            'failed': 'Failed'
         }
         return status_map.get(obj.status, obj.status.title())
     
@@ -278,15 +248,17 @@ class PDFDocumentDetailSerializer(PDFDocumentSerializer):
     
     class Meta(PDFDocumentSerializer.Meta):
         fields = PDFDocumentSerializer.Meta.fields + [
-            'filename', 'custom_options', 'error_message',
+            'file_path', 'custom_options', 'error_message',
             'include_qr_code', 'include_watermark',
-            'public_share_url', 'download_url', 'queue_info'
+            'public_share_url', 'download_url', 'queue_info',
+            'generation_started_at', 'generation_completed_at',
+            'retry_count', 'last_downloaded_at', 'public_access_token'
         ]
     
     def get_public_share_url(self, obj) -> Optional[str]:
         """Get public sharing URL if available"""
         if obj.is_public and obj.public_access_token:
-            return f"{settings.FRONTEND_URL}/shared/pdf/{obj.public_access_token}"
+            return f"{getattr(settings, 'FRONTEND_URL', '')}/shared/pdf/{obj.public_access_token}"
         return None
     
     def get_download_url(self, obj) -> Optional[str]:
@@ -334,8 +306,8 @@ class PDFDocumentCreateSerializer(serializers.Serializer):
     idea_id = serializers.UUIDField(required=True)
     template_id = serializers.UUIDField(required=False, allow_null=True)
     custom_options = serializers.JSONField(required=False, default=dict)
-    title = serializers.CharField(max_length=200, required=False)
-    include_qr_code = serializers.BooleanField(default=False)
+    title = serializers.CharField(max_length=300, required=False)
+    include_qr_code = serializers.BooleanField(default=True)
     include_watermark = serializers.BooleanField(default=False)
     is_public = serializers.BooleanField(default=False)
     
@@ -370,10 +342,11 @@ class PDFDocumentCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError("Template not found or inactive")
         
         # Check premium access
-        if template.is_premium and not request.user.has_active_subscription():
-            raise serializers.ValidationError(
-                "Premium template requires active subscription"
-            )
+        if template.is_premium and hasattr(request.user, 'has_active_subscription'):
+            if not request.user.has_active_subscription():
+                raise serializers.ValidationError(
+                    "Premium template requires active subscription"
+                )
         
         return value
     
@@ -432,8 +405,8 @@ class PDFDocumentCreateSerializer(serializers.Serializer):
         if not request or not request.user.is_authenticated:
             raise serializers.ValidationError("Authentication required")
         
-        # Check user's daily generation limit
-        daily_limit = request.user.get_daily_pdf_limit()
+        # Check user's daily generation limit (basic implementation)
+        daily_limit = getattr(request.user, 'daily_pdf_limit', 10)  # Default limit
         today_count = PDFDocument.objects.filter(
             user=request.user,
             created_at__date=timezone.now().date()
@@ -445,8 +418,8 @@ class PDFDocumentCreateSerializer(serializers.Serializer):
             )
         
         # Check monthly limit for non-premium users
-        if not request.user.has_active_subscription():
-            monthly_limit = request.user.get_monthly_pdf_limit()
+        if hasattr(request.user, 'has_active_subscription') and not request.user.has_active_subscription():
+            monthly_limit = getattr(request.user, 'monthly_pdf_limit', 50)  # Default limit
             current_month = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             month_count = PDFDocument.objects.filter(
                 user=request.user,
@@ -475,7 +448,9 @@ class PDFGenerationQueueSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'pdf_document', 'status', 'priority',
             'queue_position', 'estimated_completion_time',
-            'estimated_wait_time', 'created_at', 'updated_at'
+            'estimated_wait_time', 'processing_started_at',
+            'processing_completed_at', 'wait_time',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
     
@@ -504,8 +479,10 @@ class PDFUsageStatsSerializer(serializers.ModelSerializer):
     class Meta:
         model = PDFUsageStats
         fields = [
-            'id', 'user', 'date', 'pdfs_generated', 'pdfs_downloaded',
-            'storage_used', 'bandwidth_used', 'created_at'
+            'id', 'date', 'total_pdfs_generated', 'successful_generations',
+            'failed_generations', 'total_users', 'free_tier_pdfs',
+            'premium_pdfs', 'total_downloads', 'total_shares',
+            'average_generation_time', 'total_file_size', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
 
@@ -588,10 +565,11 @@ class PDFRegenerateSerializer(serializers.Serializer):
             raise serializers.ValidationError("Template not found or inactive")
         
         # Check premium access
-        if template.is_premium and not request.user.has_active_subscription():
-            raise serializers.ValidationError(
-                "Premium template requires active subscription"
-            )
+        if template.is_premium and hasattr(request.user, 'has_active_subscription'):
+            if not request.user.has_active_subscription():
+                raise serializers.ValidationError(
+                    "Premium template requires active subscription"
+                )
         
         return value
     

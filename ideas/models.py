@@ -112,16 +112,16 @@ class IdeaRequest(BaseModel, SoftDeleteModel):
     title = models.CharField(max_length=200, blank=True)
     
     # User input parameters
-    occasion = models.CharField(max_length=200, blank=True)  # Anniversary, first date, etc.
-    partner_interests = models.TextField(blank=True)  # What they like
-    user_interests = models.TextField(blank=True)  # What user likes
-    personality_type = models.CharField(max_length=200, blank=True)  # Introvert, extrovert, etc.
+    occasion = models.CharField(max_length=200, blank=True)
+    partner_interests = models.TextField(blank=True)
+    user_interests = models.TextField(blank=True)
+    personality_type = models.CharField(max_length=200, blank=True)
     budget = models.CharField(max_length=20, choices=BUDGET_CHOICES, default='moderate')
     location_type = models.CharField(max_length=20, choices=LOCATION_TYPE_CHOICES, default='any')
     location_city = models.CharField(max_length=100, blank=True)
-    duration = models.CharField(max_length=100, blank=True)  # Half day, full day, evening
-    special_requirements = models.TextField(blank=True)  # Dietary restrictions, accessibility
-    custom_prompt = models.TextField(blank=True)  # User's own custom request
+    duration = models.CharField(max_length=100, blank=True)
+    special_requirements = models.TextField(blank=True)
+    custom_prompt = models.TextField(blank=True)
     
     # AI generation parameters
     ai_model = models.CharField(max_length=50, default='gpt-3.5-turbo')
@@ -134,6 +134,9 @@ class IdeaRequest(BaseModel, SoftDeleteModel):
     processing_completed_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True)
     retry_count = models.IntegerField(default=0)
+    
+    # ADD THIS FIELD - Celery task tracking
+    task_id = models.CharField(max_length=255, blank=True, null=True, help_text="Celery task ID for tracking")
     
     # Metadata
     ip_address = models.GenericIPAddressField(null=True, blank=True)
@@ -150,16 +153,22 @@ class IdeaRequest(BaseModel, SoftDeleteModel):
             models.Index(fields=['user', 'status']),
             models.Index(fields=['status', 'created_at']),
             models.Index(fields=['user', 'created_at']),
+            models.Index(fields=['task_id']),  # Add index for task_id
         ]
     
     def __str__(self):
         return f"Idea Request {self.id} by {self.user.email}"
     
-    def mark_as_processing(self):
+    def mark_as_processing(self, task_id=None):
         """Mark request as processing"""
         self.status = 'processing'
         self.processing_started_at = timezone.now()
-        self.save(update_fields=['status', 'processing_started_at'])
+        if task_id:
+            self.task_id = task_id
+        update_fields = ['status', 'processing_started_at']
+        if task_id:
+            update_fields.append('task_id')
+        self.save(update_fields=update_fields)
     
     def mark_as_completed(self):
         """Mark request as completed"""
@@ -184,6 +193,23 @@ class IdeaRequest(BaseModel, SoftDeleteModel):
             delta = self.processing_completed_at - self.processing_started_at
             return delta.total_seconds()
         return None
+    
+    def get_task_status(self):
+        """Get Celery task status if task_id exists"""
+        if self.task_id:
+            from celery.result import AsyncResult
+            result = AsyncResult(self.task_id)
+            return result.status
+        return None
+    
+    def cancel_task(self):
+        """Cancel the associated Celery task"""
+        if self.task_id:
+            from celery.result import AsyncResult
+            result = AsyncResult(self.task_id)
+            result.revoke(terminate=True)
+            return True
+        return False
 
 class GeneratedIdea(BaseModel):
     """

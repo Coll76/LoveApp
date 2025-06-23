@@ -38,7 +38,7 @@ THIRD_PARTY_APPS = [
     'health_check.cache',
     'health_check.storage',
     'jazzmin',
-    
+    'drf_spectacular',
 ]
 
 LOCAL_APPS = [
@@ -52,6 +52,9 @@ LOCAL_APPS = [
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
+
+
+
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -194,12 +197,22 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle'
     ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/hour',
         'user': '1000/hour',
         'premium': '10000/hour',
+        'idea_generation': '10/hour',
     },
     'EXCEPTION_HANDLER': 'core.exceptions.custom_exception_handler',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Your API',
+    'DESCRIPTION': 'Your project description',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    # OTHER SETTINGS
 }
 
 # JWT Configuration
@@ -234,7 +247,8 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
-
+# Auto-discover tasks
+CELERY_AUTODISCOVER_TASKS = True
 # Logging Configuration
 LOGGING = {
     'version': 1,

@@ -12,7 +12,9 @@ from django.conf import settings
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 import logging
-
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 from core.permissions import IsOwnerOrReadOnly, IsPremiumUser
 from core.pagination import StandardResultsSetPagination
 from core.exceptions import ServiceUnavailableError, ValidationError
@@ -29,13 +31,23 @@ from .serializers import (
 )
 from .services import IdeaGenerationService, IdeaAnalyticsService
 from .tasks import generate_ideas_async, update_usage_stats
-
+from celery import current_app
 logger = logging.getLogger(__name__)
 
 
 class IdeaGenerationThrottle(UserRateThrottle):
     """Custom throttle for idea generation"""
     scope = 'idea_generation'
+    
+    def get_rate(self):
+        """
+        Override to provide a default rate if not configured in settings
+        """
+        try:
+            return super().get_rate()
+        except KeyError:
+            # Default rate: 10 requests per hour for authenticated users
+            return '10/hour'
 
 
 class IdeaCategoryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -124,30 +136,253 @@ class IdeaRequestViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         """Create request and trigger idea generation"""
-        request = serializer.save()
+        try:
+            # Save the request first
+            request = serializer.save()
+            
+            # Check user's daily limit
+            daily_count = IdeaRequest.objects.user_daily_count(
+                self.request.user, 
+                timezone.now().date()
+            )
+            
+            # Apply rate limiting based on subscription
+            max_daily_requests = self.get_max_daily_requests()
+            if daily_count > max_daily_requests:
+                # Delete the request we just created since it exceeds limit
+                request.delete()
+                raise ValidationError(
+                    f"Daily limit of {max_daily_requests} requests exceeded. "
+                    "Please upgrade your subscription for more requests."
+                )
+            
+            # Queue idea generation and get task ID
+            try:
+                task = generate_ideas_async.delay(request.id)
+                
+                # Store task ID in the request for tracking
+                request.task_id = task.id
+                request.save(update_fields=['task_id'])
+                
+                logger.info(f"Queued idea generation for request {request.id} with task {task.id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to queue idea generation: {str(e)}")
+                # Mark request as failed but don't delete it
+                request.mark_as_failed("Failed to queue for processing")
+                # Don't raise exception here - let the user know the request was created
+                # but will need to be retried
+                
+        except ValidationError:
+            # Re-raise validation errors (like daily limit exceeded)
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in perform_create: {str(e)}")
+            # For other unexpected errors, we can still let the request be created
+            # The user can retry it later
+            pass
+        
+    def create(self, request, *args, **kwargs):
+        """
+        Override create to return task status information
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        
+        # Return request data with task status
+        response_data = serializer.data
+        response_data['processing_status'] = 'queued'
+        response_data['message'] = 'Request created and queued for processing'
+        
+        return Response(
+            response_data, 
+            status=status.HTTP_201_CREATED, 
+            headers=headers
+        )
+        
+        
+    @action(detail=True, methods=['get'])
+    def status(self, request, pk=None):
+        """
+        Get the current status of idea generation
+        """
+        idea_request = self.get_object()
+        
+        # Check if request has a task ID
+        if not idea_request.task_id:
+            return Response({
+                'status': idea_request.status,
+                'message': 'No task ID found'
+            })
+        
+        # Check Celery task status
+        from celery.result import AsyncResult
+        task_result = AsyncResult(idea_request.task_id)
+        
+        response_data = {
+            'request_id': idea_request.id,
+            'request_status': idea_request.status,
+            'task_id': idea_request.task_id,
+            'task_state': task_result.state,
+            'processing_started_at': idea_request.processing_started_at,
+            'processing_completed_at': idea_request.processing_completed_at,
+        }
+        
+        if task_result.state == 'PENDING':
+            response_data['message'] = 'Task is queued or processing'
+        elif task_result.state == 'SUCCESS':
+            response_data['message'] = 'Ideas generated successfully'
+            response_data['ideas_count'] = idea_request.generated_ideas.count()
+        elif task_result.state == 'FAILURE':
+            response_data['message'] = 'Task failed'
+            response_data['error'] = str(task_result.info)
+        elif task_result.state == 'RETRY':
+            response_data['message'] = 'Task is retrying'
+        else:
+            response_data['message'] = f'Task state: {task_result.state}'
+        
+        return Response(response_data)
+    
+    
+    @action(detail=True, methods=['get'])
+    def results(self, request, pk=None):
+        """
+        Get generated ideas for this request
+        """
+        idea_request = self.get_object()
+        
+        if idea_request.status != 'completed':
+            return Response({
+                'error': 'Ideas not ready yet',
+                'status': idea_request.status,
+                'message': 'Please check status endpoint for progress'
+            }, status=status.HTTP_202_ACCEPTED)
+        
+        # Get generated ideas
+        ideas = idea_request.generated_ideas.all()
+        
+        if not ideas.exists():
+            return Response({
+                'error': 'No ideas generated',
+                'message': 'Generation completed but no ideas were created'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Serialize ideas
+        from .serializers import GeneratedIdeaSerializer
+        serializer = GeneratedIdeaSerializer(ideas, many=True)
+        
+        return Response({
+            'request_id': idea_request.id,
+            'ideas_count': ideas.count(),
+            'ideas': serializer.data,
+            'generated_at': idea_request.processing_completed_at
+        })
+    
+    
+    @action(detail=True, methods=['get'])
+    def poll(self, request, pk=None):
+        """
+        Polling endpoint that returns status and results when ready
+        """
+        idea_request = self.get_object()
+        
+        response_data = {
+            'request_id': idea_request.id,
+            'status': idea_request.status,
+            'processing_started_at': idea_request.processing_started_at,
+            'processing_completed_at': idea_request.processing_completed_at,
+        }
+        
+        if idea_request.status == 'completed':
+            # Include ideas in response
+            ideas = idea_request.generated_ideas.all()
+            if ideas.exists():
+                from .serializers import GeneratedIdeaSerializer
+                serializer = GeneratedIdeaSerializer(ideas, many=True)
+                response_data['ideas'] = serializer.data
+                response_data['ideas_count'] = ideas.count()
+            else:
+                response_data['error'] = 'No ideas generated'
+        
+        elif idea_request.status == 'failed':
+            response_data['error'] = idea_request.error_message or 'Generation failed'
+        
+        elif idea_request.status in ['pending', 'processing']:
+            response_data['message'] = 'Still processing...'
+        
+        return Response(response_data)
+    
+    
+    @action(detail=False, methods=['post'])
+    def generate_sync(self, request):
+        """
+        Synchronous idea generation (for testing or premium users)
+        Use with caution - can timeout for complex requests
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        # Create request
+        idea_request = serializer.save()
         
         # Check user's daily limit
         daily_count = IdeaRequest.objects.user_daily_count(
-            self.request.user, 
+            request.user, 
             timezone.now().date()
         )
         
-        # Apply rate limiting based on subscription
         max_daily_requests = self.get_max_daily_requests()
         if daily_count > max_daily_requests:
             raise ValidationError(
-                f"Daily limit of {max_daily_requests} requests exceeded. "
-                "Please upgrade your subscription for more requests."
+                f"Daily limit of {max_daily_requests} requests exceeded."
             )
         
-        # Queue idea generation
         try:
-            generate_ideas_async.delay(request.id)
-            logger.info(f"Queued idea generation for request {request.id}")
+            # Generate ideas synchronously
+            from .services import IdeaGenerationService
+            
+            service = IdeaGenerationService()
+            generation_request = IdeaGenerationRequest(
+                user_id=request.user.id,
+                request_id=idea_request.id,
+                occasion=idea_request.occasion,
+                partner_interests=idea_request.partner_interests,
+                user_interests=idea_request.user_interests,
+                personality_type=idea_request.personality_type,
+                budget=idea_request.budget,
+                location_type=idea_request.location_type,
+                location_city=idea_request.location_city,
+                duration=idea_request.duration,
+                special_requirements=idea_request.special_requirements,
+                custom_prompt=idea_request.custom_prompt,
+                ai_model=idea_request.ai_model,
+                temperature=idea_request.temperature,
+                max_tokens=idea_request.max_tokens
+            )
+            
+            # Generate ideas
+            generated_ideas = service.generate_ideas(generation_request)
+            
+            # Save ideas
+            saved_ideas = service.save_generated_ideas(idea_request.id, generated_ideas)
+            
+            # Return response with ideas
+            from .serializers import GeneratedIdeaSerializer
+            ideas_serializer = GeneratedIdeaSerializer(saved_ideas, many=True)
+            
+            return Response({
+                'request': serializer.data,
+                'ideas': ideas_serializer.data,
+                'ideas_count': len(saved_ideas),
+                'processing_time': (timezone.now() - idea_request.created_at).total_seconds()
+            })
+            
         except Exception as e:
-            logger.error(f"Failed to queue idea generation: {str(e)}")
-            request.mark_as_failed("Failed to queue for processing")
-            raise ServiceUnavailableError("Service temporarily unavailable")
+            logger.error(f"Synchronous generation failed: {str(e)}")
+            idea_request.mark_as_failed(str(e))
+            raise ServiceUnavailableError(f"Generation failed: {str(e)}")
     
     def get_max_daily_requests(self):
         """Get max daily requests based on user's subscription"""
@@ -508,3 +743,87 @@ class IdeaAnalyticsViewSet(viewsets.GenericViewSet):
         """Get user's most used templates"""
         templates = IdeaAnalyticsService.get_user_popular_templates(request.user)
         return Response(templates)
+    
+    
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def debug_celery(request):
+    """Debug endpoint to test Celery configuration"""
+    
+    # Check if Celery is configured
+    try:
+        # Test 1: Check Celery app configuration
+        celery_status = {
+            'broker_url': current_app.conf.broker_url,
+            'result_backend': current_app.conf.result_backend,
+            'task_always_eager': current_app.conf.task_always_eager,
+            'registered_tasks': list(current_app.tasks.keys())
+        }
+        
+        # Test 2: Check if our task is registered
+        task_name = 'apps.ideas.tasks.generate_ideas_async'
+        task_registered = task_name in current_app.tasks
+        
+        # Test 3: Try to queue a simple task
+        try:
+            # Create a test request first
+            from .models import IdeaRequest
+            test_request = IdeaRequest.objects.create(
+                user=request.user,
+                title="Debug Test",
+                partner_interests="Testing",
+                budget="low",
+                location_type="indoor"
+            )
+            
+            # Queue the task
+            task_result = generate_ideas_async.delay(test_request.id)
+            
+            return Response({
+                'success': True,
+                'celery_status': celery_status,
+                'task_registered': task_registered,
+                'task_id': task_result.id,
+                'task_state': task_result.state,
+                'test_request_id': test_request.id
+            })
+            
+        except Exception as task_error:
+            logger.error(f"Task queuing failed: {str(task_error)}")
+            return Response({
+                'success': False,
+                'error': f"Task queuing failed: {str(task_error)}",
+                'celery_status': celery_status,
+                'task_registered': task_registered
+            })
+            
+    except Exception as e:
+        logger.error(f"Celery debug failed: {str(e)}")
+        return Response({
+            'success': False,
+            'error': str(e)
+        })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def check_task_status(request, task_id):
+    """Check the status of a specific task"""
+    try:
+        from celery.result import AsyncResult
+        
+        task_result = AsyncResult(task_id)
+        
+        return Response({
+            'task_id': task_id,
+            'state': task_result.state,
+            'info': task_result.info,
+            'successful': task_result.successful(),
+            'failed': task_result.failed(),
+            'ready': task_result.ready()
+        })
+        
+    except Exception as e:
+        return Response({
+            'error': str(e)
+        })

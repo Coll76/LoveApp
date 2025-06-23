@@ -65,6 +65,36 @@ def detect_currency_from_country(country_code: str) -> str:
     }
     return currency_map.get(country_code.upper(), settings.DEFAULT_CURRENCY)
 
+def get_user_country_currency(user) -> tuple[str, str]:
+    """
+    Get user's country and currency based on their profile or location
+    Returns (country_code, currency_code)
+    """
+    try:
+        # Try to get from user profile first
+        if hasattr(user, 'profile') and user.profile:
+            profile = user.profile
+            if hasattr(profile, 'country') and profile.country:
+                country_code = profile.country
+                currency = detect_currency_from_country(country_code)
+                return country_code, currency
+            
+            # If no country in profile, try to get from location
+            if hasattr(profile, 'location') and profile.location:
+                # You might want to implement location-to-country mapping here
+                # For now, return default
+                pass
+        
+        # Default fallback
+        default_country = getattr(settings, 'DEFAULT_COUNTRY', 'US')
+        default_currency = getattr(settings, 'DEFAULT_CURRENCY', 'USD')
+        return default_country, default_currency
+        
+    except Exception as e:
+        logger.error(f"Error getting user country/currency: {e}")
+        # Return safe defaults
+        return 'US', 'USD'
+
 def get_subscription_price(plan_type: str, currency: str) -> float:
     """Get subscription price for specific plan and currency"""
     plans = settings.SUBSCRIPTION_PLANS
